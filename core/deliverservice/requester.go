@@ -1,17 +1,7 @@
 /*
 Copyright IBM Corp. 2017 All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-                 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package deliverclient
@@ -19,22 +9,26 @@ package deliverclient
 import (
 	"math"
 
-	"github.com/hyperledger/fabric/common/localmsp"
+	"github.com/hyperledger/fabric/common/util"
+	"github.com/hyperledger/fabric/core/comm"
 	"github.com/hyperledger/fabric/core/deliverservice/blocksprovider"
+	"github.com/hyperledger/fabric/internal/pkg/identity"
 	"github.com/hyperledger/fabric/protos/common"
 	"github.com/hyperledger/fabric/protos/orderer"
-	"github.com/hyperledger/fabric/protos/utils"
+	"github.com/hyperledger/fabric/protoutil"
 )
 
 type blocksRequester struct {
+	tls     bool
 	chainID string
 	client  blocksprovider.BlocksDeliverer
+	signer  identity.SignerSerializer
 }
 
 func (b *blocksRequester) RequestBlocks(ledgerInfoProvider blocksprovider.LedgerInfo) error {
 	height, err := ledgerInfoProvider.LedgerHeight()
 	if err != nil {
-		logger.Errorf("Can't get legder height for channel %s from committer [%s]", b.chainID, err)
+		logger.Errorf("Can't get ledger height for channel %s from committer [%s]", b.chainID, err)
 		return err
 	}
 
@@ -44,12 +38,19 @@ func (b *blocksRequester) RequestBlocks(ledgerInfoProvider blocksprovider.Ledger
 			return err
 		}
 	} else {
-		logger.Debugf("Starting deliver with olders block for channel %s", b.chainID)
+		logger.Debugf("Starting deliver with oldest block for channel %s", b.chainID)
 		if err := b.seekOldest(); err != nil {
 			return err
 		}
 	}
 
+	return nil
+}
+
+func (b *blocksRequester) getTLSCertHash() []byte {
+	if b.tls {
+		return util.ComputeSHA256(comm.GetCredentialSupport().GetClientCertificate().Certificate[0])
+	}
 	return nil
 }
 
@@ -63,7 +64,16 @@ func (b *blocksRequester) seekOldest() error {
 	//TODO- epoch and msgVersion may need to be obtained for nowfollowing usage in orderer/configupdate/configupdate.go
 	msgVersion := int32(0)
 	epoch := uint64(0)
-	env, err := utils.CreateSignedEnvelope(common.HeaderType_CONFIG_UPDATE, b.chainID, localmsp.NewSigner(), seekInfo, msgVersion, epoch)
+	tlsCertHash := b.getTLSCertHash()
+	env, err := protoutil.CreateSignedEnvelopeWithTLSBinding(
+		common.HeaderType_DELIVER_SEEK_INFO,
+		b.chainID,
+		b.signer,
+		seekInfo,
+		msgVersion,
+		epoch,
+		tlsCertHash,
+	)
 	if err != nil {
 		return err
 	}
@@ -80,7 +90,16 @@ func (b *blocksRequester) seekLatestFromCommitter(height uint64) error {
 	//TODO- epoch and msgVersion may need to be obtained for nowfollowing usage in orderer/configupdate/configupdate.go
 	msgVersion := int32(0)
 	epoch := uint64(0)
-	env, err := utils.CreateSignedEnvelope(common.HeaderType_CONFIG_UPDATE, b.chainID, localmsp.NewSigner(), seekInfo, msgVersion, epoch)
+	tlsCertHash := b.getTLSCertHash()
+	env, err := protoutil.CreateSignedEnvelopeWithTLSBinding(
+		common.HeaderType_DELIVER_SEEK_INFO,
+		b.chainID,
+		b.signer,
+		seekInfo,
+		msgVersion,
+		epoch,
+		tlsCertHash,
+	)
 	if err != nil {
 		return err
 	}

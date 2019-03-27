@@ -1,34 +1,25 @@
 /*
-Copyright IBM Corp. 2017 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-                 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package blocksprovider
 
 import (
+	"math"
 	"sync/atomic"
+	"time"
 
 	"github.com/golang/protobuf/proto"
-	gossipcommon "github.com/hyperledger/fabric/gossip/common"
-	"github.com/hyperledger/fabric/gossip/discovery"
-
 	"github.com/hyperledger/fabric/common/flogging"
 	"github.com/hyperledger/fabric/gossip/api"
+	gossipcommon "github.com/hyperledger/fabric/gossip/common"
+	"github.com/hyperledger/fabric/gossip/discovery"
+	"github.com/hyperledger/fabric/gossip/util"
 	"github.com/hyperledger/fabric/protos/common"
 	gossip_proto "github.com/hyperledger/fabric/protos/gossip"
 	"github.com/hyperledger/fabric/protos/orderer"
-	"github.com/op/go-logging"
 )
 
 // LedgerInfo an adapter to provide the interface to query
@@ -57,6 +48,9 @@ type BlocksProvider interface {
 	// DeliverBlocks starts delivering and disseminating blocks
 	DeliverBlocks()
 
+	// UpdateClientEndpoints update endpoints
+	UpdateOrderingEndpoints(endpoints []string)
+
 	// Stop shutdowns blocks provider and stops delivering new blocks
 	Stop()
 }
@@ -77,8 +71,17 @@ type BlocksDeliverer interface {
 type streamClient interface {
 	BlocksDeliverer
 
+	// UpdateEndpoint update ordering service endpoints
+	UpdateEndpoints(endpoints []string)
+
+	// GetEndpoints
+	GetEndpoints() []string
+
 	// Close closes the stream and its underlying connection
 	Close()
+
+	// Disconnect disconnects from the remote node and disable reconnect to current endpoint for predefined period of time
+	Disconnect(disableEndpoint bool)
 }
 
 // blocksProviderImpl the actual implementation for BlocksProvider interface
@@ -92,27 +95,31 @@ type blocksProviderImpl struct {
 	mcs api.MessageCryptoService
 
 	done int32
+
+	wrongStatusThreshold int
 }
 
-var logger *logging.Logger // package-level logger
+const wrongStatusThreshold = 10
 
-func init() {
-	logger = flogging.MustGetLogger("blocksProvider")
-}
+var maxRetryDelay = time.Second * 10
+var logger = flogging.MustGetLogger("blocksProvider")
 
 // NewBlocksProvider constructor function to create blocks deliverer instance
 func NewBlocksProvider(chainID string, client streamClient, gossip GossipServiceAdapter, mcs api.MessageCryptoService) BlocksProvider {
 	return &blocksProviderImpl{
-		chainID: chainID,
-		client:  client,
-		gossip:  gossip,
-		mcs:     mcs,
+		chainID:              chainID,
+		client:               client,
+		gossip:               gossip,
+		mcs:                  mcs,
+		wrongStatusThreshold: wrongStatusThreshold,
 	}
 }
 
 // DeliverBlocks used to pull out blocks from the ordering service to
 // distributed them across peers
 func (b *blocksProviderImpl) DeliverBlocks() {
+	errorStatusCounter := 0
+	statusCounter := 0
 	defer b.client.Close()
 	for !b.isDone() {
 		msg, err := b.client.Recv()
@@ -126,35 +133,63 @@ func (b *blocksProviderImpl) DeliverBlocks() {
 				logger.Warningf("[%s] ERROR! Received success for a seek that should never complete", b.chainID)
 				return
 			}
-			logger.Warningf("[%s] Got error %v", b.chainID, t)
+			if t.Status == common.Status_BAD_REQUEST || t.Status == common.Status_FORBIDDEN {
+				logger.Errorf("[%s] Got error %v", b.chainID, t)
+				errorStatusCounter++
+				if errorStatusCounter > b.wrongStatusThreshold {
+					logger.Criticalf("[%s] Wrong statuses threshold passed, stopping block provider", b.chainID)
+					return
+				}
+			} else {
+				errorStatusCounter = 0
+				logger.Warningf("[%s] Got error %v", b.chainID, t)
+			}
+			maxDelay := float64(maxRetryDelay)
+			currDelay := float64(time.Duration(math.Pow(2, float64(statusCounter))) * 100 * time.Millisecond)
+			time.Sleep(time.Duration(math.Min(maxDelay, currDelay)))
+			if currDelay < maxDelay {
+				statusCounter++
+			}
+			if t.Status == common.Status_BAD_REQUEST {
+				b.client.Disconnect(false)
+			} else {
+				b.client.Disconnect(true)
+			}
+			continue
 		case *orderer.DeliverResponse_Block:
-			seqNum := t.Block.Header.Number
+			errorStatusCounter = 0
+			statusCounter = 0
+			blockNum := t.Block.Header.Number
 
 			marshaledBlock, err := proto.Marshal(t.Block)
 			if err != nil {
-				logger.Errorf("[%s] Error serializing block with sequence number %d, due to %s", b.chainID, seqNum, err)
+				logger.Errorf("[%s] Error serializing block with sequence number %d, due to %s", b.chainID, blockNum, err)
 				continue
 			}
-			if err := b.mcs.VerifyBlock(gossipcommon.ChainID(b.chainID), seqNum, marshaledBlock); err != nil {
-				logger.Errorf("[%s] Error verifying block with sequnce number %d, due to %s", b.chainID, seqNum, err)
+			if err := b.mcs.VerifyBlock(gossipcommon.ChainID(b.chainID), blockNum, marshaledBlock); err != nil {
+				logger.Errorf("[%s] Error verifying block with sequnce number %d, due to %s", b.chainID, blockNum, err)
 				continue
 			}
 
 			numberOfPeers := len(b.gossip.PeersOfChannel(gossipcommon.ChainID(b.chainID)))
 			// Create payload with a block received
-			payload := createPayload(seqNum, marshaledBlock)
+			payload := createPayload(blockNum, marshaledBlock)
 			// Use payload to create gossip message
 			gossipMsg := createGossipMsg(b.chainID, payload)
 
-			logger.Debugf("[%s] Adding payload locally, buffer seqNum = [%d], peers number [%d]", b.chainID, seqNum, numberOfPeers)
+			logger.Debugf("[%s] Adding payload to local buffer, blockNum = [%d]", b.chainID, blockNum)
 			// Add payload to local state payloads buffer
-			b.gossip.AddPayload(b.chainID, payload)
+			if err := b.gossip.AddPayload(b.chainID, payload); err != nil {
+				logger.Warningf("Block [%d] received from ordering service wasn't added to payload buffer: %v", blockNum, err)
+			}
 
 			// Gossip messages with other nodes
-			logger.Debugf("[%s] Gossiping block [%d], peers number [%d]", b.chainID, seqNum, numberOfPeers)
-			b.gossip.Gossip(gossipMsg)
+			logger.Debugf("[%s] Gossiping block [%d], peers number [%d]", b.chainID, blockNum, numberOfPeers)
+			if !b.isDone() {
+				b.gossip.Gossip(gossipMsg)
+			}
 		default:
-			logger.Warningf("[%s] Received unknown: ", b.chainID, t)
+			logger.Warningf("[%s] Received unknown: %v", b.chainID, t)
 			return
 		}
 	}
@@ -164,6 +199,35 @@ func (b *blocksProviderImpl) DeliverBlocks() {
 func (b *blocksProviderImpl) Stop() {
 	atomic.StoreInt32(&b.done, 1)
 	b.client.Close()
+}
+
+// UpdateOrderingEndpoints update endpoints of ordering service
+func (b *blocksProviderImpl) UpdateOrderingEndpoints(endpoints []string) {
+	if !b.isEndpointsUpdated(endpoints) {
+		// No new endpoints for ordering service were provided
+		return
+	}
+	// We have got new set of endpoints, updating client
+	logger.Debug("Updating endpoint, to %s", endpoints)
+	b.client.UpdateEndpoints(endpoints)
+	logger.Debug("Disconnecting so endpoints update will take effect")
+	// We need to disconnect the client to make it reconnect back
+	// to newly updated endpoints
+	b.client.Disconnect(false)
+}
+func (b *blocksProviderImpl) isEndpointsUpdated(endpoints []string) bool {
+	if len(endpoints) != len(b.client.GetEndpoints()) {
+		return true
+	}
+	// Check that endpoints was actually updated
+	for _, endpoint := range endpoints {
+		if !util.Contains(endpoint, b.client.GetEndpoints()) {
+			// Found new endpoint
+			return true
+		}
+	}
+	// Nothing has changed
+	return false
 }
 
 // Check whenever provider is stopped

@@ -1,22 +1,14 @@
 /*
-Copyright IBM Corp. 2016 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-		 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package api
 
 import (
+	"time"
+
 	"github.com/hyperledger/fabric/gossip/common"
 	"google.golang.org/grpc"
 )
@@ -26,7 +18,6 @@ import (
 // and authenticate remote peers and data they send, as well as to verify
 // received blocks from the ordering service.
 type MessageCryptoService interface {
-
 	// GetPKIidOfCert returns the PKI-ID of a peer's identity
 	// If any error occurs, the method return nil
 	// This method does not validate peerIdentity.
@@ -57,6 +48,60 @@ type MessageCryptoService interface {
 	// If the identity is invalid, revoked, expired it returns an error.
 	// Else, returns nil
 	ValidateIdentity(peerIdentity PeerIdentityType) error
+
+	// Expiration returns:
+	// - The time when the identity expires, nil
+	//   In case it can expire
+	// - A zero value time.Time, nil
+	//   in case it cannot expire
+	// - A zero value, error in case it cannot be
+	//   determined if the identity can expire or not
+	Expiration(peerIdentity PeerIdentityType) (time.Time, error)
+}
+
+// PeerIdentityInfo aggregates a peer's identity,
+// and also additional metadata about it
+type PeerIdentityInfo struct {
+	PKIId        common.PKIidType
+	Identity     PeerIdentityType
+	Organization OrgIdentityType
+}
+
+// PeerIdentitySet aggregates a PeerIdentityInfo slice
+type PeerIdentitySet []PeerIdentityInfo
+
+// PeerIdentityFilter defines predicate function used to filter
+// peer identities
+type PeerIdentityFilter func(info PeerIdentityInfo) bool
+
+// ByOrg sorts the PeerIdentitySet by organizations of its peers
+func (pis PeerIdentitySet) ByOrg() map[string]PeerIdentitySet {
+	m := make(map[string]PeerIdentitySet)
+	for _, id := range pis {
+		m[string(id.Organization)] = append(m[string(id.Organization)], id)
+	}
+	return m
+}
+
+// ByOrg sorts the PeerIdentitySet by PKI-IDs of its peers
+func (pis PeerIdentitySet) ByID() map[string]PeerIdentityInfo {
+	m := make(map[string]PeerIdentityInfo)
+	for _, id := range pis {
+		m[string(id.PKIId)] = id
+	}
+	return m
+}
+
+// Filter filters identities based on predicate, returns new  PeerIdentitySet
+// with filtered ids.
+func (pis PeerIdentitySet) Filter(filter PeerIdentityFilter) PeerIdentitySet {
+	var result PeerIdentitySet
+	for _, id := range pis {
+		if filter(id) {
+			result = append(result, id)
+		}
+	}
+	return result
 }
 
 // PeerIdentityType is the peer's certificate
@@ -69,3 +114,11 @@ type PeerSuspector func(identity PeerIdentityType) bool
 // PeerSecureDialOpts returns the gRPC DialOptions to use for connection level
 // security when communicating with remote peer endpoints
 type PeerSecureDialOpts func() []grpc.DialOption
+
+// PeerSignature defines a signature of a peer
+// on a given message
+type PeerSignature struct {
+	Signature    []byte
+	Message      []byte
+	PeerIdentity PeerIdentityType
+}

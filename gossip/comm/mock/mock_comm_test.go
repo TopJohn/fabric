@@ -1,17 +1,7 @@
 /*
-Copyright IBM Corp. 2016 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-                 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package mock
@@ -21,6 +11,7 @@ import (
 
 	"github.com/hyperledger/fabric/gossip/comm"
 	"github.com/hyperledger/fabric/gossip/common"
+	"github.com/hyperledger/fabric/gossip/protoext"
 	proto "github.com/hyperledger/fabric/protos/gossip"
 	"github.com/stretchr/testify/assert"
 )
@@ -37,19 +28,20 @@ func TestMockComm(t *testing.T) {
 	defer comm1.Stop()
 
 	msgCh := comm1.Accept(func(message interface{}) bool {
-		return message.(proto.ReceivedMessage).GetGossipMessage().GetStateRequest() != nil ||
-			message.(proto.ReceivedMessage).GetGossipMessage().GetStateResponse() != nil
+		return message.(protoext.ReceivedMessage).GetGossipMessage().GetStateRequest() != nil ||
+			message.(protoext.ReceivedMessage).GetGossipMessage().GetStateResponse() != nil
 	})
 
 	comm2 := NewCommMock(second.endpoint, members)
 	defer comm2.Stop()
 
-	comm2.Send((&proto.GossipMessage{
-		Content: &proto.GossipMessage_StateRequest{&proto.RemoteStateRequest{
+	sMsg, _ := protoext.NoopSign(&proto.GossipMessage{
+		Content: &proto.GossipMessage_StateRequest{StateRequest: &proto.RemoteStateRequest{
 			StartSeqNum: 1,
 			EndSeqNum:   3,
 		}},
-	}).NoopSign(), &comm.RemotePeer{"first", common.PKIidType("first")})
+	})
+	comm2.Send(sMsg, &comm.RemotePeer{Endpoint: "first", PKIID: common.PKIidType("first")})
 
 	msg := <-msgCh
 
@@ -73,15 +65,16 @@ func TestMockComm_PingPong(t *testing.T) {
 	rcvChA := peerA.Accept(all)
 	rcvChB := peerB.Accept(all)
 
-	peerA.Send((&proto.GossipMessage{
+	sMsg, _ := protoext.NoopSign(&proto.GossipMessage{
 		Content: &proto.GossipMessage_DataMsg{
-			&proto.DataMessage{
-				&proto.Payload{
+			DataMsg: &proto.DataMessage{
+				Payload: &proto.Payload{
 					SeqNum: 1,
 					Data:   []byte("Ping"),
 				},
 			}},
-	}).NoopSign(), &comm.RemotePeer{"peerB", common.PKIidType("peerB")})
+	})
+	peerA.Send(sMsg, &comm.RemotePeer{Endpoint: "peerB", PKIID: common.PKIidType("peerB")})
 
 	msg := <-rcvChB
 	dataMsg := msg.GetGossipMessage().GetDataMsg()
@@ -90,8 +83,8 @@ func TestMockComm_PingPong(t *testing.T) {
 
 	msg.Respond(&proto.GossipMessage{
 		Content: &proto.GossipMessage_DataMsg{
-			&proto.DataMessage{
-				&proto.Payload{
+			DataMsg: &proto.DataMessage{
+				Payload: &proto.Payload{
 					SeqNum: 1,
 					Data:   []byte("Pong"),
 				},

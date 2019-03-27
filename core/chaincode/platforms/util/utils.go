@@ -20,19 +20,18 @@ import (
 	"archive/tar"
 	"bytes"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"os"
 	"path/filepath"
 
-	"io"
-
-	"github.com/fsouza/go-dockerclient"
+	docker "github.com/fsouza/go-dockerclient"
 	"github.com/hyperledger/fabric/common/flogging"
 	"github.com/hyperledger/fabric/common/util"
 	cutil "github.com/hyperledger/fabric/core/container/util"
 )
 
-var logger = flogging.MustGetLogger("util")
+var logger = flogging.MustGetLogger("chaincode.platform.util")
 
 //ComputeHash computes contents hash based on previous hash
 func ComputeHash(contents []byte, hash []byte) []byte {
@@ -147,11 +146,25 @@ func DockerBuild(opts DockerBuildOptions) error {
 	if err != nil {
 		return fmt.Errorf("Error creating docker client: %s", err)
 	}
-
 	if opts.Image == "" {
 		opts.Image = cutil.GetDockerfileFromConfig("chaincode.builder")
 		if opts.Image == "" {
 			return fmt.Errorf("No image provided and \"chaincode.builder\" default does not exist")
+		}
+	}
+
+	logger.Debugf("Attempting build with image %s", opts.Image)
+
+	//-----------------------------------------------------------------------------------
+	// Ensure the image exists locally, or pull it from a registry if it doesn't
+	//-----------------------------------------------------------------------------------
+	_, err = client.InspectImage(opts.Image)
+	if err != nil {
+		logger.Debugf("Image %s does not exist locally, attempt pull", opts.Image)
+
+		err = client.PullImage(docker.PullImageOptions{Repository: opts.Image}, docker.AuthConfiguration{})
+		if err != nil {
+			return fmt.Errorf("Failed to pull %s: %s", opts.Image, err)
 		}
 	}
 
@@ -187,7 +200,7 @@ func DockerBuild(opts DockerBuildOptions) error {
 	// Attach stdout buffer to capture possible compilation errors
 	//-----------------------------------------------------------------------------------
 	stdout := bytes.NewBuffer(nil)
-	_, err = client.AttachToContainerNonBlocking(docker.AttachToContainerOptions{
+	cw, err := client.AttachToContainerNonBlocking(docker.AttachToContainerOptions{
 		Container:    container.ID,
 		OutputStream: stdout,
 		ErrorStream:  stdout,
@@ -205,6 +218,7 @@ func DockerBuild(opts DockerBuildOptions) error {
 	//-----------------------------------------------------------------------------------
 	err = client.StartContainer(container.ID, nil)
 	if err != nil {
+		cw.Close()
 		return fmt.Errorf("Error executing build: %s \"%s\"", err, stdout.String())
 	}
 
@@ -213,11 +227,21 @@ func DockerBuild(opts DockerBuildOptions) error {
 	//-----------------------------------------------------------------------------------
 	retval, err := client.WaitContainer(container.ID)
 	if err != nil {
+		cw.Close()
 		return fmt.Errorf("Error waiting for container to complete: %s", err)
 	}
+
+	// Wait for stream copying to complete before accessing stdout.
+	cw.Close()
+	if err := cw.Wait(); err != nil {
+		logger.Errorf("attach wait failed: %s", err)
+	}
+
 	if retval > 0 {
 		return fmt.Errorf("Error returned from build: %d \"%s\"", retval, stdout.String())
 	}
+
+	logger.Debugf("Build output is %s", stdout.String())
 
 	//-----------------------------------------------------------------------------------
 	// Finally, download the result

@@ -1,29 +1,18 @@
 /*
 Copyright IBM Corp. 2016 All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-                 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package cauthdsl
 
 import (
-	cb "github.com/hyperledger/fabric/protos/common"
-	"github.com/hyperledger/fabric/protos/msp"
-
 	"sort"
 
 	"github.com/golang/protobuf/proto"
-	"github.com/hyperledger/fabric/protos/utils"
+	cb "github.com/hyperledger/fabric/protos/common"
+	"github.com/hyperledger/fabric/protos/msp"
+	"github.com/hyperledger/fabric/protoutil"
 )
 
 // AcceptAllPolicy always evaluates to true
@@ -57,13 +46,13 @@ func init() {
 // Envelope builds an envelope message embedding a SignaturePolicy
 func Envelope(policy *cb.SignaturePolicy, identities [][]byte) *cb.SignaturePolicyEnvelope {
 	ids := make([]*msp.MSPPrincipal, len(identities))
-	for i, _ := range ids {
+	for i := range ids {
 		ids[i] = &msp.MSPPrincipal{PrincipalClassification: msp.MSPPrincipal_IDENTITY, Principal: identities[i]}
 	}
 
 	return &cb.SignaturePolicyEnvelope{
 		Version:    0,
-		Policy:     policy,
+		Rule:       policy,
 		Identities: ids,
 	}
 }
@@ -80,15 +69,33 @@ func SignedBy(index int32) *cb.SignaturePolicy {
 // SignedByMspMember creates a SignaturePolicyEnvelope
 // requiring 1 signature from any member of the specified MSP
 func SignedByMspMember(mspId string) *cb.SignaturePolicyEnvelope {
+	return signedByFabricEntity(mspId, msp.MSPRole_MEMBER)
+}
+
+// SignedByMspClient creates a SignaturePolicyEnvelope
+// requiring 1 signature from any client of the specified MSP
+func SignedByMspClient(mspId string) *cb.SignaturePolicyEnvelope {
+	return signedByFabricEntity(mspId, msp.MSPRole_CLIENT)
+}
+
+// SignedByMspPeer creates a SignaturePolicyEnvelope
+// requiring 1 signature from any peer of the specified MSP
+func SignedByMspPeer(mspId string) *cb.SignaturePolicyEnvelope {
+	return signedByFabricEntity(mspId, msp.MSPRole_PEER)
+}
+
+// SignedByFabricEntity creates a SignaturePolicyEnvelope
+// requiring 1 signature from any fabric entity, having the passed role, of the specified MSP
+func signedByFabricEntity(mspId string, role msp.MSPRole_MSPRoleType) *cb.SignaturePolicyEnvelope {
 	// specify the principal: it's a member of the msp we just found
 	principal := &msp.MSPPrincipal{
 		PrincipalClassification: msp.MSPPrincipal_ROLE,
-		Principal:               utils.MarshalOrPanic(&msp.MSPRole{Role: msp.MSPRole_MEMBER, MspIdentifier: mspId})}
+		Principal:               protoutil.MarshalOrPanic(&msp.MSPRole{Role: role, MspIdentifier: mspId})}
 
 	// create the policy: it requires exactly 1 signature from the first (and only) principal
 	p := &cb.SignaturePolicyEnvelope{
 		Version:    0,
-		Policy:     NOutOf(1, []*cb.SignaturePolicy{SignedBy(0)}),
+		Rule:       NOutOf(1, []*cb.SignaturePolicy{SignedBy(0)}),
 		Identities: []*msp.MSPPrincipal{principal},
 	}
 
@@ -101,12 +108,12 @@ func SignedByMspAdmin(mspId string) *cb.SignaturePolicyEnvelope {
 	// specify the principal: it's a member of the msp we just found
 	principal := &msp.MSPPrincipal{
 		PrincipalClassification: msp.MSPPrincipal_ROLE,
-		Principal:               utils.MarshalOrPanic(&msp.MSPRole{Role: msp.MSPRole_ADMIN, MspIdentifier: mspId})}
+		Principal:               protoutil.MarshalOrPanic(&msp.MSPRole{Role: msp.MSPRole_ADMIN, MspIdentifier: mspId})}
 
 	// create the policy: it requires exactly 1 signature from the first (and only) principal
 	p := &cb.SignaturePolicyEnvelope{
 		Version:    0,
-		Policy:     NOutOf(1, []*cb.SignaturePolicy{SignedBy(0)}),
+		Rule:       NOutOf(1, []*cb.SignaturePolicy{SignedBy(0)}),
 		Identities: []*msp.MSPPrincipal{principal},
 	}
 
@@ -115,6 +122,10 @@ func SignedByMspAdmin(mspId string) *cb.SignaturePolicyEnvelope {
 
 //wrapper for generating "any of a given role" type policies
 func signedByAnyOfGivenRole(role msp.MSPRole_MSPRoleType, ids []string) *cb.SignaturePolicyEnvelope {
+	return SignedByNOutOfGivenRole(1, role, ids)
+}
+
+func SignedByNOutOfGivenRole(n int32, role msp.MSPRole_MSPRoleType, ids []string) *cb.SignaturePolicyEnvelope {
 	// we create an array of principals, one principal
 	// per application MSP defined on this chain
 	sort.Strings(ids)
@@ -123,14 +134,14 @@ func signedByAnyOfGivenRole(role msp.MSPRole_MSPRoleType, ids []string) *cb.Sign
 	for i, id := range ids {
 		principals[i] = &msp.MSPPrincipal{
 			PrincipalClassification: msp.MSPPrincipal_ROLE,
-			Principal:               utils.MarshalOrPanic(&msp.MSPRole{Role: role, MspIdentifier: id})}
+			Principal:               protoutil.MarshalOrPanic(&msp.MSPRole{Role: role, MspIdentifier: id})}
 		sigspolicy[i] = SignedBy(int32(i))
 	}
 
 	// create the policy: it requires exactly 1 signature from any of the principals
 	p := &cb.SignaturePolicyEnvelope{
 		Version:    0,
-		Policy:     NOutOf(1, sigspolicy),
+		Rule:       NOutOf(n, sigspolicy),
 		Identities: principals,
 	}
 
@@ -142,6 +153,20 @@ func signedByAnyOfGivenRole(role msp.MSPRole_MSPRoleType, ids []string) *cb.Sign
 // listed in the supplied string array
 func SignedByAnyMember(ids []string) *cb.SignaturePolicyEnvelope {
 	return signedByAnyOfGivenRole(msp.MSPRole_MEMBER, ids)
+}
+
+// SignedByAnyClient returns a policy that requires one valid
+// signature from a client of any of the orgs whose ids are
+// listed in the supplied string array
+func SignedByAnyClient(ids []string) *cb.SignaturePolicyEnvelope {
+	return signedByAnyOfGivenRole(msp.MSPRole_CLIENT, ids)
+}
+
+// SignedByAnyPeer returns a policy that requires one valid
+// signature from an orderer of any of the orgs whose ids are
+// listed in the supplied string array
+func SignedByAnyPeer(ids []string) *cb.SignaturePolicyEnvelope {
+	return signedByAnyOfGivenRole(msp.MSPRole_PEER, ids)
 }
 
 // SignedByAnyAdmin returns a policy that requires one valid
@@ -166,8 +191,8 @@ func NOutOf(n int32, policies []*cb.SignaturePolicy) *cb.SignaturePolicy {
 	return &cb.SignaturePolicy{
 		Type: &cb.SignaturePolicy_NOutOf_{
 			NOutOf: &cb.SignaturePolicy_NOutOf{
-				N:        n,
-				Policies: policies,
+				N:     n,
+				Rules: policies,
 			},
 		},
 	}

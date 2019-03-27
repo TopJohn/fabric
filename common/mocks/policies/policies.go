@@ -18,7 +18,7 @@ package policies
 
 import (
 	"github.com/hyperledger/fabric/common/policies"
-	cb "github.com/hyperledger/fabric/protos/common"
+	"github.com/hyperledger/fabric/protoutil"
 )
 
 // Policy is a mock implementation of the policies.Policy interface
@@ -28,7 +28,7 @@ type Policy struct {
 }
 
 // Evaluate returns the Err set in Policy
-func (p *Policy) Evaluate(signatureSet []*cb.SignedData) error {
+func (p *Policy) Evaluate(signatureSet []*protoutil.SignedData) error {
 	return p.Err
 }
 
@@ -38,24 +38,11 @@ type Manager struct {
 	// for id is not in PolicyMap
 	Policy *Policy
 
-	// BasePathVal is returned as the result of BasePath
-	BasePathVal string
-
 	// PolicyMap is returned is used to look up Policies in
 	PolicyMap map[string]policies.Policy
 
 	// SubManagers is used for the return value of Manager
 	SubManagersMap map[string]*Manager
-}
-
-// PolicyNames panics
-func (m *Manager) PolicyNames() []string {
-	panic("Unimplimented")
-}
-
-// BasePath returns BasePathVal
-func (m *Manager) BasePath() string {
-	return m.BasePathVal
 }
 
 // Manager returns the Manager from SubManagers for the last component of the path

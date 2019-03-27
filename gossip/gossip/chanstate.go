@@ -1,17 +1,7 @@
 /*
-Copyright IBM Corp. 2016 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-		 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package gossip
@@ -26,6 +16,8 @@ import (
 	"github.com/hyperledger/fabric/gossip/common"
 	"github.com/hyperledger/fabric/gossip/discovery"
 	"github.com/hyperledger/fabric/gossip/gossip/channel"
+	"github.com/hyperledger/fabric/gossip/metrics"
+	"github.com/hyperledger/fabric/gossip/protoext"
 	proto "github.com/hyperledger/fabric/protos/gossip"
 )
 
@@ -52,8 +44,8 @@ func (cs *channelState) isStopping() bool {
 	return atomic.LoadInt32(&cs.stopping) == int32(1)
 }
 
-func (cs *channelState) lookupChannelForMsg(msg proto.ReceivedMessage) channel.GossipChannel {
-	if msg.GetGossipMessage().IsStateInfoPullRequestMsg() {
+func (cs *channelState) lookupChannelForMsg(msg protoext.ReceivedMessage) channel.GossipChannel {
+	if protoext.IsStateInfoPullRequestMsg(msg.GetGossipMessage().GossipMessage) {
 		sipr := msg.GetGossipMessage().GetStateInfoPullReq()
 		mac := sipr.Channel_MAC
 		pkiID := msg.GetConnectionInfo().ID
@@ -63,7 +55,7 @@ func (cs *channelState) lookupChannelForMsg(msg proto.ReceivedMessage) channel.G
 }
 
 func (cs *channelState) lookupChannelForGossipMsg(msg *proto.GossipMessage) channel.GossipChannel {
-	if !msg.IsStateInfoMsg() {
+	if !protoext.IsStateInfoMsg(msg) {
 		// If we reached here then the message isn't:
 		// 1) StateInfoPullRequest
 		// 2) StateInfo
@@ -103,7 +95,8 @@ func (cs *channelState) getGossipChannelByChainID(chainID common.ChainID) channe
 	return cs.channels[string(chainID)]
 }
 
-func (cs *channelState) joinChannel(joinMsg api.JoinChannelMessage, chainID common.ChainID) {
+func (cs *channelState) joinChannel(joinMsg api.JoinChannelMessage, chainID common.ChainID,
+	metrics *metrics.MembershipMetrics) {
 	if cs.isStopping() {
 		return
 	}
@@ -112,7 +105,7 @@ func (cs *channelState) joinChannel(joinMsg api.JoinChannelMessage, chainID comm
 	if gc, exists := cs.channels[string(chainID)]; !exists {
 		pkiID := cs.g.comm.GetPKIid()
 		ga := &gossipAdapterImpl{gossipServiceImpl: cs.g, Discovery: cs.g.disc}
-		gc := channel.NewGossipChannel(pkiID, cs.g.selfOrg, cs.g.mcs, chainID, ga, joinMsg)
+		gc := channel.NewGossipChannel(pkiID, cs.g.selfOrg, cs.g.mcs, chainID, ga, joinMsg, metrics, nil)
 		cs.channels[string(chainID)] = gc
 	} else {
 		gc.ConfigureChannel(joinMsg)
@@ -133,22 +126,57 @@ func (ga *gossipAdapterImpl) GetConf() channel.Config {
 		PullPeerNum:                 ga.conf.PullPeerNum,
 		RequestStateInfoInterval:    ga.conf.RequestStateInfoInterval,
 		BlockExpirationInterval:     ga.conf.PullInterval * 100,
-		StateInfoExpirationInterval: ga.conf.PublishStateInfoInterval * 100,
+		StateInfoCacheSweepInterval: ga.conf.PullInterval * 5,
+		TimeForMembershipTracker:    ga.conf.TimeForMembershipTracker,
+		DigestWaitTime:              ga.conf.DigestWaitTime,
+		RequestWaitTime:             ga.conf.RequestWaitTime,
+		ResponseWaitTime:            ga.conf.ResponseWaitTime,
+		MsgExpirationTimeout:        ga.conf.MsgExpirationTimeout,
 	}
 }
 
-// Gossip gossips a message
-func (ga *gossipAdapterImpl) Gossip(msg *proto.SignedGossipMessage) {
-	ga.gossipServiceImpl.emitter.Add(msg)
+func (ga *gossipAdapterImpl) Sign(msg *proto.GossipMessage) (*protoext.SignedGossipMessage, error) {
+	signer := func(msg []byte) ([]byte, error) {
+		return ga.mcs.Sign(msg)
+	}
+	sMsg := &protoext.SignedGossipMessage{
+		GossipMessage: msg,
+	}
+	e, err := sMsg.Sign(signer)
+	if err != nil {
+		return nil, err
+	}
+	return &protoext.SignedGossipMessage{
+		Envelope:      e,
+		GossipMessage: msg,
+	}, nil
 }
 
-func (ga *gossipAdapterImpl) Send(msg *proto.SignedGossipMessage, peers ...*comm.RemotePeer) {
+// Gossip gossips a message
+func (ga *gossipAdapterImpl) Gossip(msg *protoext.SignedGossipMessage) {
+	ga.gossipServiceImpl.emitter.Add(&emittedGossipMessage{
+		SignedGossipMessage: msg,
+		filter: func(_ common.PKIidType) bool {
+			return true
+		},
+	})
+}
+
+// Forward sends message to the next hops
+func (ga *gossipAdapterImpl) Forward(msg protoext.ReceivedMessage) {
+	ga.gossipServiceImpl.emitter.Add(&emittedGossipMessage{
+		SignedGossipMessage: msg.GetGossipMessage(),
+		filter:              msg.GetConnectionInfo().ID.IsNotSameFilter,
+	})
+}
+
+func (ga *gossipAdapterImpl) Send(msg *protoext.SignedGossipMessage, peers ...*comm.RemotePeer) {
 	ga.gossipServiceImpl.comm.Send(msg, peers...)
 }
 
 // ValidateStateInfoMessage returns error if a message isn't valid
 // nil otherwise
-func (ga *gossipAdapterImpl) ValidateStateInfoMessage(msg *proto.SignedGossipMessage) error {
+func (ga *gossipAdapterImpl) ValidateStateInfoMessage(msg *protoext.SignedGossipMessage) error {
 	return ga.gossipServiceImpl.validateStateInfoMsg(msg)
 }
 

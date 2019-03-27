@@ -5,12 +5,19 @@ Coding Golang
 ~~~~~~~~~~~~~~
 
 We code in Go™ and strictly follow the `best
-practices <http://golang.org/doc/effective_go.html>`__ and will not
+practices <https://golang.org/doc/effective_go.html>`__ and will not
 accept any deviations. You must run the following tools against your Go
 code and fix all errors and warnings: -
 `golint <https://github.com/golang/lint>`__ - `go
 vet <https://golang.org/cmd/vet/>`__ -
 `goimports <https://godoc.org/golang.org/x/tools/cmd/goimports>`__
+
+API Documentation
+^^^^^^^^^^^^^^^^^
+
+The API documentation for Hyperledger Fabric's Golang APIs is available
+in `GoDoc <https://godoc.org/github.com/hyperledger/fabric>`_.
+
 
 Generating gRPC code
 ---------------------
@@ -26,29 +33,13 @@ generate/update the respective ``.pb.go`` files.
 Adding or updating Go packages
 ------------------------------
 
-The Hyperledger Fabric Project uses Go 1.6 vendoring for package
+Hyperledger Fabric uses Go Vendoring for package
 management. This means that all required packages reside in the
-``vendor`` folder within the fabric project. Go will use packages in
-this folder instead of the GOPATH when the ``go install`` or
+``$GOPATH/src/github.com/hyperledger/fabric/vendor`` folder. Go will use
+packages in this folder instead of the GOPATH when the ``go install`` or
 ``go build`` commands are executed. To manage the packages in the
 ``vendor`` folder, we use
-`Govendor <https://github.com/kardianos/govendor>`__, which is installed
-in the Vagrant environment. The following commands can be used for
-package management:
+`dep <https://golang.github.io/dep/>`__.
 
-::
-
-      # Add external packages.
-      govendor add +external
-
-      # Add a specific package.
-      govendor add github.com/kardianos/osext
-
-      # Update vendor packages.
-      govendor update +vendor
-
-      # Revert back to normal GOPATH packages.
-      govendor remove +vendor
-
-      # List package.
-      govendor list
+.. Licensed under Creative Commons Attribution 4.0 International License
+   https://creativecommons.org/licenses/by/4.0/

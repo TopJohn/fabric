@@ -1,25 +1,18 @@
 /*
-Copyright IBM Corp. 2016 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-                 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package mock
 
 import (
+	"time"
+
 	"github.com/hyperledger/fabric/gossip/api"
 	"github.com/hyperledger/fabric/gossip/comm"
 	"github.com/hyperledger/fabric/gossip/common"
+	"github.com/hyperledger/fabric/gossip/protoext"
 	"github.com/hyperledger/fabric/gossip/util"
 	proto "github.com/hyperledger/fabric/protos/gossip"
 )
@@ -47,7 +40,7 @@ type packetMock struct {
 type channelMock struct {
 	accept common.MessageAcceptor
 
-	channel chan proto.ReceivedMessage
+	channel chan protoext.ReceivedMessage
 }
 
 type commMock struct {
@@ -62,7 +55,7 @@ type commMock struct {
 	done chan struct{}
 }
 
-var logger = util.GetLogger(util.LoggingMockModule, "")
+var logger = util.GetLogger(util.CommMockLogger, "")
 
 // NewCommMock creates mocked communication object
 func NewCommMock(id string, members map[string]*socketMock) comm.Comm {
@@ -85,11 +78,17 @@ func NewCommMock(id string, members map[string]*socketMock) comm.Comm {
 
 // Respond sends a GossipMessage to the origin from which this ReceivedMessage was sent from
 func (packet *packetMock) Respond(msg *proto.GossipMessage) {
+	sMsg, _ := protoext.NoopSign(msg)
 	packet.src.socket <- &packetMock{
 		src: packet.dst,
 		dst: packet.src,
-		msg: msg.NoopSign(),
+		msg: sMsg,
 	}
+}
+
+// Ack returns to the sender an acknowledgement for the message
+func (packet *packetMock) Ack(err error) {
+
 }
 
 // GetSourceEnvelope Returns the Envelope the ReceivedMessage was
@@ -99,13 +98,13 @@ func (packet *packetMock) GetSourceEnvelope() *proto.Envelope {
 }
 
 // GetGossipMessage returns the underlying GossipMessage
-func (packet *packetMock) GetGossipMessage() *proto.SignedGossipMessage {
-	return packet.msg.(*proto.SignedGossipMessage)
+func (packet *packetMock) GetGossipMessage() *protoext.SignedGossipMessage {
+	return packet.msg.(*protoext.SignedGossipMessage)
 }
 
 // GetConnectionInfo returns information about the remote peer
 // that sent the message
-func (packet *packetMock) GetConnectionInfo() *proto.ConnectionInfo {
+func (packet *packetMock) GetConnectionInfo() *protoext.ConnectionInfo {
 	return nil
 }
 
@@ -142,7 +141,7 @@ func (mock *commMock) GetPKIid() common.PKIidType {
 }
 
 // Send sends a message to remote peers
-func (mock *commMock) Send(msg *proto.SignedGossipMessage, peers ...*comm.RemotePeer) {
+func (mock *commMock) Send(msg *protoext.SignedGossipMessage, peers ...*comm.RemotePeer) {
 	for _, peer := range peers {
 		logger.Debug("Sending message to peer ", peer.Endpoint, "from ", mock.id)
 		mock.members[peer.Endpoint].socket <- &packetMock{
@@ -151,6 +150,10 @@ func (mock *commMock) Send(msg *proto.SignedGossipMessage, peers ...*comm.Remote
 			msg: msg,
 		}
 	}
+}
+
+func (mock *commMock) SendWithAck(_ *protoext.SignedGossipMessage, _ time.Duration, _ int, _ ...*comm.RemotePeer) comm.AggregatedSendResult {
+	panic("not implemented")
 }
 
 // Probe probes a remote node and returns nil if its responsive,
@@ -167,8 +170,8 @@ func (mock *commMock) Handshake(peer *comm.RemotePeer) (api.PeerIdentityType, er
 
 // Accept returns a dedicated read-only channel for messages sent by other nodes that match a certain predicate.
 // Each message from the channel can be used to send a reply back to the sender
-func (mock *commMock) Accept(accept common.MessageAcceptor) <-chan proto.ReceivedMessage {
-	ch := make(chan proto.ReceivedMessage)
+func (mock *commMock) Accept(accept common.MessageAcceptor) <-chan protoext.ReceivedMessage {
+	ch := make(chan protoext.ReceivedMessage)
 	mock.acceptors = append(mock.acceptors, &channelMock{accept, ch})
 	return ch
 }

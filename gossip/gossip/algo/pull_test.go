@@ -1,17 +1,7 @@
 /*
-Copyright IBM Corp. 2016 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-		 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package algo
@@ -19,23 +9,17 @@ package algo
 import (
 	"fmt"
 	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/hyperledger/fabric/core/config"
 	"github.com/hyperledger/fabric/gossip/util"
-	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 )
 
 func init() {
 	util.SetupTestLogging()
-	SetDigestWaitTime(time.Duration(100) * time.Millisecond)
-	SetRequestWaitTime(time.Duration(200) * time.Millisecond)
-	SetResponseWaitTime(time.Duration(200) * time.Millisecond)
 }
 
 type messageHook func(interface{})
@@ -83,7 +67,13 @@ func newPushPullTestInstance(name string, peers map[string]*pullTestInstance) *p
 		name:              name,
 	}
 
-	inst.PullEngine = NewPullEngine(inst, time.Duration(500)*time.Millisecond)
+	config := PullEngineConfig{
+		DigestWaitTime:   time.Duration(100) * time.Millisecond,
+		RequestWaitTime:  time.Duration(200) * time.Millisecond,
+		ResponseWaitTime: time.Duration(200) * time.Millisecond,
+	}
+
+	inst.PullEngine = NewPullEngine(inst, time.Duration(500)*time.Millisecond, config)
 
 	peers[name] = inst
 	go func() {
@@ -548,38 +538,6 @@ func TestFilter(t *testing.T) {
 	assert.True(t, util.IndexInSlice(inst3.state.ToArray(), "4", Strcmp) == -1)
 	assert.True(t, util.IndexInSlice(inst3.state.ToArray(), "5", Strcmp) != -1)
 
-}
-
-func TestDefaultConfig(t *testing.T) {
-	preDigestWaitTime := util.GetDurationOrDefault("peer.gossip.digestWaitTime", defDigestWaitTime)
-	preRequestWaitTime := util.GetDurationOrDefault("peer.gossip.requestWaitTime", defRequestWaitTime)
-	preResponseWaitTime := util.GetDurationOrDefault("peer.gossip.responseWaitTime", defResponseWaitTime)
-	defer func() {
-		SetDigestWaitTime(preDigestWaitTime)
-		SetRequestWaitTime(preRequestWaitTime)
-		SetResponseWaitTime(preResponseWaitTime)
-	}()
-
-	// Check if we can read default duration when no properties are
-	// defined in config file.
-	viper.Reset()
-	assert.Equal(t, time.Duration(1)*time.Second, util.GetDurationOrDefault("peer.gossip.digestWaitTime", defDigestWaitTime))
-	assert.Equal(t, time.Duration(1)*time.Second, util.GetDurationOrDefault("peer.gossip.requestWaitTime", defRequestWaitTime))
-	assert.Equal(t, time.Duration(2)*time.Second, util.GetDurationOrDefault("peer.gossip.responseWaitTime", defResponseWaitTime))
-
-	// Check if the properties in the config file (core.yaml)
-	// are set to the desired duration.
-	viper.Reset()
-	viper.SetConfigName("core")
-	viper.SetEnvPrefix("CORE")
-	config.AddDevConfigPath(nil)
-	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
-	viper.AutomaticEnv()
-	err := viper.ReadInConfig()
-	assert.NoError(t, err)
-	assert.Equal(t, time.Duration(1)*time.Second, util.GetDurationOrDefault("peer.gossip.digestWaitTime", defDigestWaitTime))
-	assert.Equal(t, time.Duration(1)*time.Second, util.GetDurationOrDefault("peer.gossip.requestWaitTime", defRequestWaitTime))
-	assert.Equal(t, time.Duration(2)*time.Second, util.GetDurationOrDefault("peer.gossip.responseWaitTime", defResponseWaitTime))
 }
 
 func Strcmp(a interface{}, b interface{}) bool {

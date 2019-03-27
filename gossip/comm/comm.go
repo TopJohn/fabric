@@ -1,27 +1,19 @@
 /*
-Copyright IBM Corp. 2016 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-                 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package comm
 
 import (
+	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/hyperledger/fabric/gossip/api"
 	"github.com/hyperledger/fabric/gossip/common"
-	proto "github.com/hyperledger/fabric/protos/gossip"
+	"github.com/hyperledger/fabric/gossip/protoext"
 )
 
 // Comm is an object that enables to communicate with other peers
@@ -32,7 +24,10 @@ type Comm interface {
 	GetPKIid() common.PKIidType
 
 	// Send sends a message to remote peers
-	Send(msg *proto.SignedGossipMessage, peers ...*RemotePeer)
+	Send(msg *protoext.SignedGossipMessage, peers ...*RemotePeer)
+
+	// SendWithAck sends a message to remote peers, waiting for acknowledgement from minAck of them, or until a certain timeout expires
+	SendWithAck(msg *protoext.SignedGossipMessage, timeout time.Duration, minAck int, peers ...*RemotePeer) AggregatedSendResult
 
 	// Probe probes a remote node and returns nil if its responsive,
 	// and an error if it's not.
@@ -44,7 +39,7 @@ type Comm interface {
 
 	// Accept returns a dedicated read-only channel for messages sent by other nodes that match a certain predicate.
 	// Each message from the channel can be used to send a reply back to the sender
-	Accept(common.MessageAcceptor) <-chan proto.ReceivedMessage
+	Accept(common.MessageAcceptor) <-chan protoext.ReceivedMessage
 
 	// PresumedDead returns a read-only channel for node endpoints that are suspected to be offline
 	PresumedDead() <-chan common.PKIidType
@@ -60,6 +55,63 @@ type Comm interface {
 type RemotePeer struct {
 	Endpoint string
 	PKIID    common.PKIidType
+}
+
+// SendResult defines a result of a send to a remote peer
+type SendResult struct {
+	error
+	RemotePeer
+}
+
+// Error returns the error of the SendResult, or an empty string
+// if an error hasn't occurred
+func (sr SendResult) Error() string {
+	if sr.error != nil {
+		return sr.error.Error()
+	}
+	return ""
+}
+
+// AggregatedSendResult represents a slice of SendResults
+type AggregatedSendResult []SendResult
+
+// AckCount returns the number of successful acknowledgements
+func (ar AggregatedSendResult) AckCount() int {
+	c := 0
+	for _, ack := range ar {
+		if ack.error == nil {
+			c++
+		}
+	}
+	return c
+}
+
+// NackCount returns the number of unsuccessful acknowledgements
+func (ar AggregatedSendResult) NackCount() int {
+	return len(ar) - ar.AckCount()
+}
+
+// String returns a JSONed string representation
+// of the AggregatedSendResult
+func (ar AggregatedSendResult) String() string {
+	errMap := map[string]int{}
+	for _, ack := range ar {
+		if ack.error == nil {
+			continue
+		}
+		errMap[ack.Error()]++
+	}
+
+	ackCount := ar.AckCount()
+	output := map[string]interface{}{}
+	if ackCount > 0 {
+		output["successes"] = ackCount
+	}
+	if ackCount < len(ar) {
+		output["failures"] = errMap
+	}
+	b, _ := json.Marshal(output)
+	return string(b)
 }
 
 // String converts a RemotePeer to a string

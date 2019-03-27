@@ -18,6 +18,8 @@ package peer
 
 import (
 	"fmt"
+	"sync"
+	"time"
 
 	pb "github.com/hyperledger/fabric/protos/peer"
 )
@@ -44,7 +46,7 @@ type MockResponseSet struct {
 //and response to send (optional)
 type MockResponse struct {
 	RecvMsg *pb.ChaincodeMessage
-	RespMsg *pb.ChaincodeMessage
+	RespMsg interface{}
 }
 
 // MockCCComm implements the mock communication between chaincode and peer
@@ -53,11 +55,18 @@ type MockResponse struct {
 type MockCCComm struct {
 	name        string
 	bailOnError bool
-	sendOnRecv  *pb.ChaincodeMessage
+	keepAlive   *pb.ChaincodeMessage
 	recvStream  chan *pb.ChaincodeMessage
 	sendStream  chan *pb.ChaincodeMessage
 	respIndex   int
+	respLock    sync.Mutex
 	respSet     *MockResponseSet
+	pong        bool
+	skipClose   bool
+}
+
+func (s *MockCCComm) SetName(newname string) {
+	s.name = newname
 }
 
 //Send sends a message
@@ -87,16 +96,11 @@ func (s *MockCCComm) GetSendStream() chan *pb.ChaincodeMessage {
 	return s.sendStream
 }
 
-//Quit closes the channels...this will also close chaincode side
+//Quit closes the channels...
 func (s *MockCCComm) Quit() {
-	if s.recvStream != nil {
+	if !s.skipClose {
 		close(s.recvStream)
-		s.recvStream = nil
-	}
-
-	if s.sendStream != nil {
 		close(s.sendStream)
-		s.sendStream = nil
 	}
 }
 
@@ -105,16 +109,52 @@ func (s *MockCCComm) SetBailOnError(b bool) {
 	s.bailOnError = b
 }
 
+//SetPong pongs received keepalive. This mut be done on the chaincode only
+func (s *MockCCComm) SetPong(val bool) {
+	s.pong = val
+}
+
+//SetKeepAlive sets keepalive. This mut be done on the server only
+func (s *MockCCComm) SetKeepAlive(ka *pb.ChaincodeMessage) {
+	s.keepAlive = ka
+}
+
 //SetResponses sets responses for an Init or Invoke
 func (s *MockCCComm) SetResponses(respSet *MockResponseSet) {
+	s.respLock.Lock()
 	s.respSet = respSet
 	s.respIndex = 0
+	s.respLock.Unlock()
+}
+
+//keepAlive
+func (s *MockCCComm) ka(done <-chan struct{}) {
+	for {
+		if s.keepAlive == nil {
+			return
+		}
+		s.Send(s.keepAlive)
+		select {
+		case <-time.After(10 * time.Millisecond):
+		case <-done:
+			return
+		}
+	}
 }
 
 //Run receives and sends indefinitely
-func (s *MockCCComm) Run() error {
+func (s *MockCCComm) Run(done <-chan struct{}) error {
+	//start the keepalive
+	go s.ka(done)
+	defer s.Quit()
+
 	for {
 		msg, err := s.Recv()
+
+		//stream could just be closed
+		if msg == nil {
+			return err
+		}
 
 		if err != nil {
 			return err
@@ -129,6 +169,17 @@ func (s *MockCCComm) Run() error {
 }
 
 func (s *MockCCComm) respond(msg *pb.ChaincodeMessage) error {
+	if msg != nil && msg.Type == pb.ChaincodeMessage_KEEPALIVE {
+		//if ping should be ponged, pong
+		if s.pong {
+			return s.Send(msg)
+		}
+		return nil
+	}
+
+	s.respLock.Lock()
+	defer s.respLock.Unlock()
+
 	var err error
 	if s.respIndex < len(s.respSet.Responses) {
 		mockResp := s.respSet.Responses[s.respIndex]
@@ -143,7 +194,17 @@ func (s *MockCCComm) respond(msg *pb.ChaincodeMessage) error {
 		}
 
 		if mockResp.RespMsg != nil {
-			err = s.Send(mockResp.RespMsg)
+			var ccMsg *pb.ChaincodeMessage
+			if ccMsg, _ = mockResp.RespMsg.(*pb.ChaincodeMessage); ccMsg == nil {
+				if ccMsgFunc, ok := mockResp.RespMsg.(func(*pb.ChaincodeMessage) *pb.ChaincodeMessage); ok && ccMsgFunc != nil {
+					ccMsg = ccMsgFunc(msg)
+				}
+			}
+
+			if ccMsg == nil {
+				panic("----no pb.ChaincodeMessage---")
+			}
+			err = s.Send(ccMsg)
 		}
 
 		s.respIndex = s.respIndex + 1

@@ -1,7 +1,7 @@
 Read-Write set semantics
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
-This documents discusses the details of the current implementation about
+This document discusses the details of the current implementation about
 the semantics of read-write sets.
 
 Transaction simulation and read-write set
@@ -147,3 +147,6 @@ T1,..,T5 (could be contained in a single block or different blocks)
    not modified by any of the preceding transactions
 
 **Note**: Transactions with multiple read-write sets are not yet supported.
+
+.. Licensed under Creative Commons Attribution 4.0 International License
+   https://creativecommons.org/licenses/by/4.0/

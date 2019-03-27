@@ -17,6 +17,8 @@ limitations under the License.
 package msp
 
 import (
+	"time"
+
 	m "github.com/hyperledger/fabric/msp"
 	"github.com/hyperledger/fabric/protos/msp"
 )
@@ -24,13 +26,17 @@ import (
 type noopmsp struct {
 }
 
-// NewNoopMsp returns a no-op implementation of the MSP inteface
+// NewNoopMsp returns a no-op implementation of the MSP interface
 func NewNoopMsp() m.MSP {
 	return &noopmsp{}
 }
 
 func (msp *noopmsp) Setup(*msp.MSPConfig) error {
 	return nil
+}
+
+func (msp *noopmsp) GetVersion() m.MSPVersion {
+	return m.MSPv1_0
 }
 
 func (msp *noopmsp) GetType() m.ProviderType {
@@ -61,6 +67,16 @@ func (msp *noopmsp) GetIntermediateCerts() []m.Identity {
 	return nil
 }
 
+// GetTLSRootCerts returns the root certificates for this MSP
+func (msp *noopmsp) GetTLSRootCerts() [][]byte {
+	return nil
+}
+
+// GetTLSIntermediateCerts returns the intermediate root certificates for this MSP
+func (msp *noopmsp) GetTLSIntermediateCerts() [][]byte {
+	return nil
+}
+
 func (msp *noopmsp) DeserializeIdentity(serializedID []byte) (m.Identity, error) {
 	id, _ := newNoopIdentity()
 	return id, nil
@@ -74,6 +90,11 @@ func (msp *noopmsp) SatisfiesPrincipal(id m.Identity, principal *msp.MSPPrincipa
 	return nil
 }
 
+// IsWellFormed checks if the given identity can be deserialized into its provider-specific form
+func (msp *noopmsp) IsWellFormed(_ *msp.SerializedIdentity) error {
+	return nil
+}
+
 type noopidentity struct {
 }
 
@@ -81,8 +102,16 @@ func newNoopIdentity() (m.Identity, error) {
 	return &noopidentity{}, nil
 }
 
+func (id *noopidentity) Anonymous() bool {
+	panic("implement me")
+}
+
 func (id *noopidentity) SatisfiesPrincipal(*msp.MSPPrincipal) error {
 	return nil
+}
+
+func (id *noopidentity) ExpiresAt() time.Time {
+	return time.Time{}
 }
 
 func (id *noopidentity) GetIdentifier() *m.IdentityIdentifier {
@@ -105,14 +134,6 @@ func (id *noopidentity) Verify(msg []byte, sig []byte) error {
 	return nil
 }
 
-func (id *noopidentity) VerifyOpts(msg []byte, sig []byte, opts m.SignatureOpts) error {
-	return nil
-}
-
-func (id *noopidentity) VerifyAttributes(proof []byte, spec *m.AttributeProofSpec) error {
-	return nil
-}
-
 func (id *noopidentity) Serialize() ([]byte, error) {
 	return []byte("cert"), nil
 }
@@ -129,18 +150,6 @@ func (id *noopsigningidentity) Sign(msg []byte) ([]byte, error) {
 	return []byte("signature"), nil
 }
 
-func (id *noopsigningidentity) SignOpts(msg []byte, opts m.SignatureOpts) ([]byte, error) {
-	return nil, nil
-}
-
-func (id *noopsigningidentity) GetAttributeProof(spec *m.AttributeProofSpec) (proof []byte, err error) {
-	return nil, nil
-}
-
 func (id *noopsigningidentity) GetPublicVersion() m.Identity {
 	return id
-}
-
-func (id *noopsigningidentity) Renew() error {
-	return nil
 }

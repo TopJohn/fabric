@@ -1,3 +1,5 @@
+// +build pkcs11
+
 /*
 Copyright IBM Corp. 2017 All Rights Reserved.
 
@@ -46,11 +48,15 @@ func TestPKCS11FactoryGetInvalidArgs(t *testing.T) {
 
 func TestPKCS11FactoryGet(t *testing.T) {
 	f := &PKCS11Factory{}
+	lib, pin, label := pkcs11.FindPKCS11Lib()
 
 	opts := &FactoryOpts{
 		Pkcs11Opts: &pkcs11.PKCS11Opts{
 			SecLevel:   256,
 			HashFamily: "SHA2",
+			Library:    lib,
+			Pin:        pin,
+			Label:      label,
 		},
 	}
 	csp, err := f.Get(opts)
@@ -62,6 +68,9 @@ func TestPKCS11FactoryGet(t *testing.T) {
 			SecLevel:     256,
 			HashFamily:   "SHA2",
 			FileKeystore: &pkcs11.FileKeystoreOpts{KeyStorePath: os.TempDir()},
+			Library:      lib,
+			Pin:          pin,
+			Label:        label,
 		},
 	}
 	csp, err = f.Get(opts)
@@ -73,6 +82,9 @@ func TestPKCS11FactoryGet(t *testing.T) {
 			SecLevel:   256,
 			HashFamily: "SHA2",
 			Ephemeral:  true,
+			Library:    lib,
+			Pin:        pin,
+			Label:      label,
 		},
 	}
 	csp, err = f.Get(opts)

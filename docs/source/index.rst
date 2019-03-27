@@ -1,112 +1,39 @@
-Welcome to Fabric
-=================
+A Blockchain Platform for the Enterprise
+========================================
 
-Hyperledger Fabric is a platform for distributed ledger solutions, underpinned
-by a modular architecture delivering high degrees of confidentiality, resiliency,
-flexibility and scalability.  It is designed to support pluggable implementations
-of different components, and accommodate the complexity and intricacies that exist
-across the economic ecosystem.
+.. image:: images/hyperledger_fabric_logo_color.png
 
-Hyperledger Fabric delivers a uniquely elastic and extensible architecture,
-distinguishing it from alternative blockchain solutions. Planning for the
-future of enterprise blockchain requires building on top of a fully-vetted,
-open source architecture; Hyperledger Fabric is your starting point.
+Enterprise grade permissioned distributed ledger platform that offers
+modularity and versatility for a broad set of industry use cases.
 
-It's recommended for first-time users to begin by going through the
-:doc:`getting_started` section in order to gain familiarity with the Fabric
-components and the basic transaction flow.  Once comfortable, continue
-exploring the library for demos, technical specifications, APIs, etc.
+.. raw:: html
 
-Before diving in, watch how Fabric is `Building a Blockchain for Business <https://www.youtube.com/watch?v=EKa5Gh9whgU>`__ .
-
-
-
-.. NOTE:: This build of the docs is from the "|version|" branch
+   <br/><br/>
+   <iframe width="560" height="315" src="https://www.youtube.com/embed/EKa5Gh9whgU" frameborder="0" allowfullscreen></iframe>
+   <br/><br/>
 
 .. toctree::
-   :maxdepth: 2
-   :caption: Get the Code
+   :maxdepth: 1
 
-   releases
-
-.. toctree::
-   :maxdepth: 2
-   :caption: Getting Started
-
+   whatis
+   whatsnew
+   key_concepts
    getting_started
-
-.. toctree::
-   :maxdepth: 2
-   :caption: Key Concepts
-
-   overview
-   capabilities
-   fabric_model
-   usecases
-
-
-.. toctree::
-   :maxdepth: 2
-   :caption: Tutorials
-
-   demos
-   chaincode
-   videos
-
-.. toctree::
-   :maxdepth: 2
-   :caption: Operations Guide
-
-   best_practices
-   configtx
-   configtxgen
-   cc-packaging-and-signing
-   error-handling
-   Setup/logging-control
-
-.. toctree::
-   :maxdepth: 2
-   :caption: Architecture
-
-   arch-deep-dive
-   txflow
-   Setup/ca-setup
-   endorsement-policies
-   nodesdk
-   orderingservice
-   channels
-   ledger
-   readwrite
-   gossip
-
-.. toctree::
-   :maxdepth: 2
-   :caption: Troubleshooting and FAQs
-
-   troubleshooting
-   FAQ/architecture_FAQ
-   FAQ/chaincode_FAQ
-   FAQ/identity_management_FAQ
-
-.. toctree::
-   :maxdepth: 2
-   :caption: Appendix
-
+   developapps/developing_applications
+   tutorials
+   ops_guide
+   command_ref
+   architecture
+   Fabric-FAQ
+   CONTRIBUTING
    glossary
    releases
-   CONTRIBUTING
-   MAINTAINERS
-   jira_navigation
-   dev-setup/devenv
-   dev-setup/build
-   Gerrit/lf-account
-   Gerrit/gerrit
-   Gerrit/changes
-   Gerrit/reviewing
-   Gerrit/best-practices
-   testing
-   Style-guides/go-style
    questions
-   quality
    status
-   license
+
+.. note:: If you have questions not addressed by this documentation, or run into
+          issues with any of the tutorials, please visit the :doc:`questions`
+          page for some tips on where to find additional help.
+
+.. Licensed under Creative Commons Attribution 4.0 International License
+   https://creativecommons.org/licenses/by/4.0/

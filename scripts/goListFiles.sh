@@ -1,7 +1,13 @@
 #!/bin/bash
+#
+# Copyright Greg Haskins All Rights Reserved.
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+
 
 find_golang_src() {
-    find $1 -name "*.go" -or -name "*.h" -or -name "*.c"
+    find $1 -name "*.go" -or -name "*.h" -or -name "*.c" -or -name "*.s"
 }
 
 list_deps() {

@@ -1,43 +1,36 @@
+// +build go1.9
+
 /*
-Copyright IBM Corp. 2016 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-		 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package golang
 
 import (
-	"fmt"
-	"os"
-	"strings"
-	"testing"
-
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
 	"time"
 
-	"github.com/spf13/viper"
-
-	"github.com/hyperledger/fabric/core/config"
+	"github.com/hyperledger/fabric/core/config/configtest"
 	pb "github.com/hyperledger/fabric/protos/peer"
+	"github.com/spf13/viper"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func testerr(err error, succ bool) error {
 	if succ && err != nil {
-		return fmt.Errorf("Expected success but got %s", err)
+		return fmt.Errorf("Expected success but got error %s", err)
 	} else if !succ && err == nil {
-		return fmt.Errorf("Expected failer but succeeded")
+		return fmt.Errorf("Expected failure but succeeded")
 	}
 	return nil
 }
@@ -92,12 +85,16 @@ func TestValidateCDS(t *testing.T) {
 	specs := make([]spec, 0)
 	specs = append(specs, spec{CCName: "NoCode", Path: "path/to/nowhere", File: "/bin/warez", Mode: 0100400, SuccessExpected: false})
 	specs = append(specs, spec{CCName: "NoCode", Path: "path/to/somewhere", File: "/src/path/to/somewhere/main.go", Mode: 0100400, SuccessExpected: true})
+	specs = append(specs, spec{CCName: "NoCode", Path: "path/to/somewhere", File: "/bad-src/path/to/somewhere/main.go", Mode: 0100400, SuccessExpected: false})
 	specs = append(specs, spec{CCName: "NoCode", Path: "path/to/somewhere", File: "/src/path/to/somewhere/warez", Mode: 0100555, SuccessExpected: false})
+	specs = append(specs, spec{CCName: "NoCode", Path: "path/to/somewhere", File: "/META-INF/path/to/a/meta1", Mode: 0100555, SuccessExpected: false})
+	specs = append(specs, spec{CCName: "NoCode", Path: "path/to/somewhere", File: "/META-Inf/path/to/a/meta2", Mode: 0100400, SuccessExpected: false})
+	specs = append(specs, spec{CCName: "NoCode", Path: "path/to/somewhere", File: "META-INF/path/to/a/meta3", Mode: 0100400, SuccessExpected: true})
 
 	for _, s := range specs {
 		cds, err := generateFakeCDS(s.CCName, s.Path, s.File, s.Mode)
 
-		err = platform.ValidateDeploymentSpec(cds)
+		err = platform.ValidateCodePackage(cds.CodePackage)
 		if s.SuccessExpected == true && err != nil {
 			t.Errorf("Unexpected failure: %s", err)
 		}
@@ -108,112 +105,230 @@ func TestValidateCDS(t *testing.T) {
 	}
 }
 
-func Test_writeGopathSrc(t *testing.T) {
+func TestPlatform_GoPathNotSet(t *testing.T) {
+	gopath := os.Getenv("GOPATH")
+	defer os.Setenv("GOPATH", gopath)
+	os.Setenv("GOPATH", "")
 
-	inputbuf := bytes.NewBuffer(nil)
-	tw := tar.NewWriter(inputbuf)
+	// Go 1.9 sets GOPATH to $HOME/go if GOPATH is not set
+	defaultGopath := filepath.Join(os.Getenv("HOME"), "go")
+	currentGopath, err := getGopath()
+	assert.NoError(t, err, "Expected default GOPATH")
+	assert.Equal(t, defaultGopath, currentGopath)
+}
 
-	err := writeGopathSrc(tw, "")
+func Test_findSource(t *testing.T) {
+	gopath, err := getGopath()
 	if err != nil {
-		t.Fail()
-		t.Logf("Error writing gopath src: %s", err)
+		t.Errorf("failed to get GOPATH: %s", err)
 	}
-	//ioutil.WriteFile("/tmp/chaincode_deployment.tar", inputbuf.Bytes(), 0644)
 
+	var source SourceMap
+
+	source, err = findSource(gopath, "github.com/hyperledger/fabric/cmd/peer")
+	if err != nil {
+		t.Errorf("failed to find source: %s", err)
+	}
+
+	if _, ok := source["src/github.com/hyperledger/fabric/cmd/peer/main.go"]; !ok {
+		t.Errorf("Failed to find expected source file: %v", source)
+	}
+
+	source, err = findSource(gopath, "acme.com/this/should/not/exist")
+	if err == nil {
+		t.Errorf("Success when failure was expected")
+	}
+}
+
+func Test_DeploymentPayload(t *testing.T) {
+	platform := &Platform{}
+
+	payload, err := platform.GetDeploymentPayload("github.com/hyperledger/fabric/core/chaincode/platforms/golang/testdata/src/chaincodes/noop")
+	assert.NoError(t, err)
+
+	t.Logf("payload size: %d", len(payload))
+
+	is := bytes.NewReader(payload)
+	gr, err := gzip.NewReader(is)
+	if err == nil {
+		tr := tar.NewReader(gr)
+
+		for {
+			header, err := tr.Next()
+			if err != nil {
+				// We only get here if there are no more entries to scan
+				break
+			}
+
+			t.Logf("%s (%d)", header.Name, header.Size)
+		}
+	}
+}
+
+func Test_DeploymentPayloadWithStateDBArtifacts(t *testing.T) {
+	platform := &Platform{}
+
+	payload, err := platform.GetDeploymentPayload("github.com/hyperledger/fabric/core/chaincode/platforms/golang/testdata/src/chaincodes/noopWithMETA")
+	assert.NoError(t, err)
+
+	t.Logf("payload size: %d", len(payload))
+
+	is := bytes.NewReader(payload)
+	gr, err := gzip.NewReader(is)
+	if err == nil {
+		tr := tar.NewReader(gr)
+
+		var foundIndexArtifact bool
+		for {
+			header, err := tr.Next()
+			if err != nil {
+				// We only get here if there are no more entries to scan
+				break
+			}
+
+			t.Logf("%s (%d)", header.Name, header.Size)
+			if header.Name == "META-INF/statedb/couchdb/indexes/indexOwner.json" {
+				foundIndexArtifact = true
+			}
+		}
+		assert.Equal(t, true, foundIndexArtifact, "should have found statedb index artifact in noopWithMETA META-INF directory")
+	}
 }
 
 func Test_decodeUrl(t *testing.T) {
-	cs := &pb.ChaincodeSpec{
-		ChaincodeId: &pb.ChaincodeID{
-			Name: "Test Chaincode",
-			Path: "http://github.com/hyperledger/fabric/examples/chaincode/go/map",
-		},
+	path := "http://example.com/foo/bar"
+	if _, err := decodeUrl(path); err != nil {
+		t.Fail()
+		t.Logf("Error to decodeUrl unsuccessfully with valid path: %s, %s", path, err)
 	}
 
-	if _, err := decodeUrl(cs); err != nil {
+	path = ""
+	if _, err := decodeUrl(path); err == nil {
 		t.Fail()
-		t.Logf("Error to decodeUrl unsuccessfully with valid path: %s, %s", cs.ChaincodeId.Path, err)
+		t.Logf("Error to decodeUrl successfully with invalid path: %s", path)
 	}
 
-	cs.ChaincodeId.Path = ""
-
-	if _, err := decodeUrl(cs); err == nil {
-		t.Fail()
-		t.Logf("Error to decodeUrl successfully with invalid path: %s", cs.ChaincodeId.Path)
+	path = "/"
+	if _, err := decodeUrl(path); err == nil {
+		t.Fatalf("Error to decodeUrl successfully with invalid path: %s", path)
 	}
 
-	cs.ChaincodeId.Path = "/"
-
-	if _, err := decodeUrl(cs); err == nil {
-		t.Fail()
-		t.Logf("Error to decodeUrl successfully with invalid path: %s", cs.ChaincodeId.Path)
-	}
-
-	cs.ChaincodeId.Path = "http:///"
-
-	if _, err := decodeUrl(cs); err == nil {
-		t.Fail()
-		t.Logf("Error to decodeUrl successfully with invalid path: %s", cs.ChaincodeId.Path)
+	path = "http:///"
+	if _, err := decodeUrl(path); err == nil {
+		t.Fatalf("Error to decodeUrl successfully with invalid path: %s", path)
 	}
 }
 
-func TestValidChaincodeSpec(t *testing.T) {
+func TestValidatePath(t *testing.T) {
 	platform := &Platform{}
 
 	var tests = []struct {
-		spec *pb.ChaincodeSpec
+		path string
 		succ bool
 	}{
-		{spec: &pb.ChaincodeSpec{ChaincodeId: &pb.ChaincodeID{Name: "Test Chaincode", Path: "http://github.com/hyperledger/fabric/examples/chaincode/go/map"}}, succ: true},
-		{spec: &pb.ChaincodeSpec{ChaincodeId: &pb.ChaincodeID{Name: "Test Chaincode", Path: "https://github.com/hyperledger/fabric/examples/chaincode/go/map"}}, succ: true},
-		{spec: &pb.ChaincodeSpec{ChaincodeId: &pb.ChaincodeID{Name: "Test Chaincode", Path: "github.com/hyperledger/fabric/examples/chaincode/go/map"}}, succ: true},
-		{spec: &pb.ChaincodeSpec{ChaincodeId: &pb.ChaincodeID{Name: "Test Chaincode", Path: "github.com/hyperledger/fabric/bad/chaincode/go/map"}}, succ: false},
+		{path: "http://github.com/hyperledger/fabric/core/chaincode/platforms/golang/testdata/src/chaincodes/noop", succ: true},
+		{path: "https://github.com/hyperledger/fabric/core/chaincode/platforms/golang/testdata/src/chaincodes/noop", succ: true},
+		{path: "github.com/hyperledger/fabric/core/chaincode/platforms/golang/testdata/src/chaincodes/noop", succ: true},
+		{path: "github.com/hyperledger/fabric/bad/chaincode/golang/testdata/src/chaincodes/noop", succ: false},
+		{path: ":github.com/hyperledger/fabric/core/chaincode/platforms/golang/testdata/src/chaincodes/noop", succ: false},
 	}
 
 	for _, tst := range tests {
-		err := platform.ValidateSpec(tst.spec)
+		err := platform.ValidatePath(tst.path)
 		if err = testerr(err, tst.succ); err != nil {
-			t.Errorf("Error to validating chaincode spec: %s, %s", tst.spec.ChaincodeId.Path, err)
+			t.Errorf("Error validating chaincode spec: %s, %s", tst.path, err)
 		}
 	}
+}
+
+func updateGopath(t *testing.T, path string) func() {
+	initialGopath, set := os.LookupEnv("GOPATH")
+
+	if path == "" {
+		err := os.Unsetenv("GOPATH")
+		require.NoError(t, err)
+	} else {
+		err := os.Setenv("GOPATH", path)
+		require.NoError(t, err)
+	}
+
+	if !set {
+		return func() { os.Unsetenv("GOPATH") }
+	}
+	return func() { os.Setenv("GOPATH", initialGopath) }
 }
 
 func TestGetDeploymentPayload(t *testing.T) {
+	testdataPath, err := filepath.Abs("testdata")
+	require.NoError(t, err)
+
 	platform := &Platform{}
 
 	var tests = []struct {
-		spec *pb.ChaincodeSpec
-		succ bool
+		gopath string
+		path   string
+		succ   bool
 	}{
-		{spec: &pb.ChaincodeSpec{ChaincodeId: &pb.ChaincodeID{Name: "Test Chaincode", Path: "github.com/hyperledger/fabric/examples/chaincode/go/map"}}, succ: true},
-		{spec: &pb.ChaincodeSpec{ChaincodeId: &pb.ChaincodeID{Name: "Test Chaincode", Path: "github.com/hyperledger/fabric/examples/bad/go/map"}}, succ: false},
+		{gopath: testdataPath, path: "chaincodes/noop", succ: true},
+		{gopath: testdataPath, path: "bad/chaincodes/noop", succ: false},
+		{gopath: testdataPath, path: "chaincodes/BadImport", succ: false},
+		{gopath: testdataPath, path: "chaincodes/BadMetadataInvalidIndex", succ: false},
+		{gopath: testdataPath, path: "chaincodes/BadMetadataUnexpectedFolderContent", succ: false},
+		{gopath: testdataPath, path: "chaincodes/BadMetadataIgnoreHiddenFile", succ: true},
+		{gopath: testdataPath, path: "chaincodes/empty/", succ: false},
 	}
 
 	for _, tst := range tests {
-		_, err := platform.GetDeploymentPayload(tst.spec)
+		reset := updateGopath(t, tst.gopath)
+		_, err := platform.GetDeploymentPayload(tst.path)
+		t.Log(err)
 		if err = testerr(err, tst.succ); err != nil {
-			t.Errorf("Error to validating chaincode spec: %s, %s", tst.spec.ChaincodeId.Path, err)
+			t.Errorf("Error validating chaincode spec: %s, %s", tst.path, err)
 		}
+		reset()
+	}
+}
+
+//TestGetLDFlagsOpts tests handling of chaincode.golang.dynamicLink
+func TestGetLDFlagsOpts(t *testing.T) {
+	viper.Set("chaincode.golang.dynamicLink", true)
+	if getLDFlagsOpts() != dynamicLDFlagsOpts {
+		t.Error("Error handling chaincode.golang.dynamicLink configuration. ldflags should be for dynamic linkink")
+	}
+	viper.Set("chaincode.golang.dynamicLink", false)
+	if getLDFlagsOpts() != staticLDFlagsOpts {
+		t.Error("Error handling chaincode.golang.dynamicLink configuration. ldflags should be for static linkink")
 	}
 }
 
 //TestGenerateDockerBuild goes through the functions needed to do docker build
 func TestGenerateDockerBuild(t *testing.T) {
+	defaultGopath := os.Getenv("GOPATH")
+	testdataPath, err := filepath.Abs("testdata")
+	require.NoError(t, err)
+
+	tests := []struct {
+		gopath string
+		spec   spec
+	}{
+		{gopath: defaultGopath, spec: spec{CCName: "NoCode", Path: "path/to/nowhere", File: "/bin/warez", Mode: 0100400, SuccessExpected: false}},
+		{gopath: defaultGopath, spec: spec{CCName: "invalidhttp", Path: "https://not/a/valid/path", SuccessExpected: false, RealGen: true}},
+		{gopath: testdataPath, spec: spec{CCName: "noop", Path: "chaincodes/noop", SuccessExpected: true, RealGen: true}},
+		{gopath: testdataPath, spec: spec{CCName: "noopBadPath", Path: "chaincodes/noop", File: "bad/path/to/chaincode.go", Mode: 0100400, SuccessExpected: false}},
+		{gopath: testdataPath, spec: spec{CCName: "noopBadMode", Path: "chaincodes/noop", File: "chaincodes/noop/chaincode.go", Mode: 0100555, SuccessExpected: false}},
+		{gopath: testdataPath, spec: spec{CCName: "AutoVendor", Path: "chaincodes/AutoVendor/chaincode", SuccessExpected: true, RealGen: true}},
+	}
+
 	platform := &Platform{}
+	for _, test := range tests {
+		tst := test.spec
+		reset := updateGopath(t, test.gopath)
 
-	specs := make([]spec, 0)
-	specs = append(specs, spec{CCName: "NoCode", Path: "path/to/nowhere", File: "/bin/warez", Mode: 0100400, SuccessExpected: false})
-	specs = append(specs, spec{CCName: "invalidhttp", Path: "https://not/a/valid/path", File: "/src/github.com/hyperledger/fabric/examples/chaincode/go/map/map.go", Mode: 0100400, SuccessExpected: false, RealGen: true})
-	specs = append(specs, spec{CCName: "map", Path: "github.com/hyperledger/fabric/examples/chaincode/go/map", File: "/src/github.com/hyperledger/fabric/examples/chaincode/go/map/map.go", Mode: 0100400, SuccessExpected: true, RealGen: true})
-	specs = append(specs, spec{CCName: "mapBadPath", Path: "github.com/hyperledger/fabric/examples/chaincode/go/map", File: "/src/github.com/hyperledger/fabric/examples/bad/path/to/map.go", Mode: 0100400, SuccessExpected: false})
-	specs = append(specs, spec{CCName: "mapBadMode", Path: "github.com/hyperledger/fabric/examples/chaincode/go/map", File: "/src/github.com/hyperledger/fabric/examples/chaincode/go/map/map.go", Mode: 0100555, SuccessExpected: false})
-
-	var err error
-	for _, tst := range specs {
 		inputbuf := bytes.NewBuffer(nil)
 		tw := tar.NewWriter(inputbuf)
 
 		var cds *pb.ChaincodeDeploymentSpec
+		var err error
 		if tst.RealGen {
 			cds = &pb.ChaincodeDeploymentSpec{
 				ChaincodeSpec: &pb.ChaincodeSpec{
@@ -224,7 +339,7 @@ func TestGenerateDockerBuild(t *testing.T) {
 					},
 				},
 			}
-			cds.CodePackage, err = platform.GetDeploymentPayload(cds.ChaincodeSpec)
+			cds.CodePackage, err = platform.GetDeploymentPayload(tst.Path)
 			if err = testerr(err, tst.SuccessExpected); err != nil {
 				t.Errorf("test failed in GetDeploymentPayload: %s, %s", cds.ChaincodeSpec.ChaincodeId.Path, err)
 			}
@@ -232,20 +347,21 @@ func TestGenerateDockerBuild(t *testing.T) {
 			cds, err = generateFakeCDS(tst.CCName, tst.Path, tst.File, tst.Mode)
 		}
 
-		if _, err = platform.GenerateDockerfile(cds); err != nil {
+		if _, err = platform.GenerateDockerfile(); err != nil {
 			t.Errorf("could not generate docker file for a valid spec: %s, %s", cds.ChaincodeSpec.ChaincodeId.Path, err)
 		}
-		err = platform.GenerateDockerBuild(cds, tw)
+		err = platform.GenerateDockerBuild(cds.ChaincodeSpec.ChaincodeId.Path, cds.CodePackage, tw)
 		if err = testerr(err, tst.SuccessExpected); err != nil {
-			t.Errorf("Error to validating chaincode spec: %s, %s", cds.ChaincodeSpec.ChaincodeId.Path, err)
+			t.Errorf("Error validating chaincode spec: %s, %s", cds.ChaincodeSpec.ChaincodeId.Path, err)
 		}
+		reset()
 	}
 }
 
 func TestMain(m *testing.M) {
 	viper.SetConfigName("core")
 	viper.SetEnvPrefix("CORE")
-	config.AddDevConfigPath(nil)
+	configtest.AddDevConfigPath(nil)
 	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	viper.AutomaticEnv()
 	if err := viper.ReadInConfig(); err != nil {
